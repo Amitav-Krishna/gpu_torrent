@@ -34,8 +34,26 @@ The following environment variables can be used to configure the worker:
 
 - `COORDINATOR_URL`: The URL of the coordinator. Defaults to `http://localhost:8000`.
 
-## Future Improvements
+## Future Improvements for Scalability
 
-- **Multi-GPU support:** The current implementation only supports the first GPU (`index 0`). Future versions could be extended to support multiple GPUs.
-- **Configurable supported models:** The list of supported models is currently hardcoded. This could be made configurable through an environment variable or a configuration file.
-- **Health checks:** The worker should expose a health check endpoint that the coordinator can use to monitor the worker's status.
+To make this worker production-ready and scalable, the following areas should be addressed:
+
+- **Robust Registration and Heartbeating:**
+  - **Retry Mechanism:** The current registration is a one-time attempt on startup. A robust implementation should include a retry loop with exponential backoff to handle cases where the coordinator is temporarily unavailable.
+  - **Heartbeating:** The worker should periodically send a heartbeat to the coordinator to signal that it is still alive and available to take tasks. If the coordinator misses a certain number of heartbeats, it should de-register the worker.
+
+- **Structured Logging:**
+  - The current use of `print()` statements is not suitable for production. It should be replaced with a structured logging library (e.g., Python's `logging` module configured to output JSON). This allows for easier parsing, searching, and monitoring in a centralized logging system (like the ELK stack or Splunk).
+
+- **Containerization:**
+  - A `Dockerfile` should be created for the worker. This will allow for consistent, reproducible deployments and is a prerequisite for scaling with container orchestration platforms.
+  - **Orchestration:** For true scalability, the worker should be deployed and managed by a system like Kubernetes, which can automatically handle scaling, restarts, and service discovery.
+
+- **Dynamic Model Management:**
+  - The list of `supported_models` is currently hardcoded. A more scalable design would involve the worker dynamically loading or unloading models based on instructions from the coordinator. This would allow for more flexible resource management and prevent the worker from holding large models in memory unnecessarily.
+
+- **Multi-GPU Support:**
+  - The current implementation only supports the first GPU (`index 0`). Future versions could be extended to either report on all GPUs in a system or even manage multiple vLLM instances, one for each GPU.
+
+- **Health Checks:**
+  - The worker should expose a `/health` endpoint that the coordinator (or an orchestrator like Kubernetes) can use to verify the worker's status. This is critical for automated recovery and load balancing.
