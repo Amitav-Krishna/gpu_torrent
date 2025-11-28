@@ -46,10 +46,10 @@ WebSockets via FastAPI if you need real-time updates
 
 3. **Build Redis queue consumer loop** - Subscribe to worker-specific queue. Poll for jobs, deserialize request payload, call vLLM.
 
-4. **Add basic inference execution** - Accept request format, call vLLM generate endpoint, return complete response (no streaming yet).
+4. **Add basic inference execution** - For now, just have the "inference" be a static, dummy response (e.g. "The inference is not working yet") and have it return that.
 
 5. **Return job results** - Serialize inference result and push back to Redis response queue or return via HTTP.
-
+All of this code should go in /src/client/
 ---
 
 ### 2. **Central Coordinator Service - Core**
@@ -63,6 +63,8 @@ WebSockets via FastAPI if you need real-time updates
 4. **Track which workers exist** - Maintain in-memory list of registered workers and their models. Query this for routing.
 
 5. **Expose basic status endpoint** - GET /workers to list all registered workers.
+
+All of this code should go in /src/server
 
 ---
 
@@ -78,6 +80,7 @@ WebSockets via FastAPI if you need real-time updates
 
 5. **Add basic error handling** - Return 500 for any errors with error message. Simple try/catch wrapper.
 
+All of this should go in /src/client/api
 ---
 
 ### 4. **Token Generation Pipeline - Core**
@@ -88,6 +91,7 @@ WebSockets via FastAPI if you need real-time updates
 
 3. **Simple token counting** - Use model tokenizer to count input/output tokens. Return in usage field.
 
+All of this code should go in /src/client/inference
 ---
 
 ## **END-TO-END FLOW WORKS HERE** ✅
