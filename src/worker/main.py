@@ -4,8 +4,10 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
 from contextlib import asynccontextmanager
+from .loader import model_loader
 
 COORDINATOR_URL = os.getenv("COORDINATOR_URL", "http://localhost:8000")
+MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-2-7b-chat-hf")
 
 class WorkerRegistration(BaseModel):
     gpu_model: str
@@ -51,6 +53,8 @@ async def lifespan(app: FastAPI):
         print("Worker registered successfully.")
     except httpx.RequestError as e:
         print(f"Failed to register worker: {e}")
+
+    app.state.model = model_loader.load_model(MODEL_NAME)
     yield
 
 app = FastAPI(lifespan=lifespan)

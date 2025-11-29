@@ -2,3 +2,5 @@ fastapi
 uvicorn
 httpx
 nvidia-ml-py
+transformers
+torch
