@@ -2,15 +2,7 @@ import asyncio
 import json
 import redis.asyncio as redis
 import uuid
-
-# Placeholder for the vLLM engine
-class VLLMEngine:
-    async def generate(self, model, prompt, params):
-        print(f"Generating completion for model {model} with prompt: {prompt}")
-        await asyncio.sleep(5) # Simulate work
-        return {"text": f"This is a dummy completion for {prompt}"}
-
-vllm_engine = VLLMEngine()
+from ..inference import inference
 
 async def redis_consumer(worker_id: str, redis_url: str):
     """
@@ -29,8 +21,7 @@ async def redis_consumer(worker_id: str, redis_url: str):
 
                 print(f"Received job: {job_data['request_id']}")
 
-                # Call the vLLM engine
-                result = await vllm_engine.generate(
+                result = await inference.execute_inference(
                     job_data["model"],
                     job_data["prompt"],
                     job_data["params"]
