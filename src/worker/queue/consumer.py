@@ -27,15 +27,16 @@ async def redis_consumer(worker_id: str, redis_url: str):
                     job_data["params"]
                 )
 
-                # TODO: Send the result to a results queue or webhook
-                print(f"Finished job: {job_data['request_id']}, result: {result}")
+                result_queue = f"results:{job_data['request_id']}"
+                await redis_client.lpush(result_queue, json.dumps(result))
+                print(f"Finished job: {job_data['request_id']}, result sent to {result_queue}")
 
             except json.JSONDecodeError:
                 print("Error: Invalid JSON payload")
             except Exception as e:
                 print(f"An error occurred: {e}")
 
-    except redis.exceptions.ConnectionError as e:
+    except redis.ConnectionError as e:
         print(f"Error connecting to Redis: {e}")
     finally:
         if 'redis_client' in locals() and redis_client:
