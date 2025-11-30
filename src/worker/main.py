@@ -10,6 +10,10 @@ from .queue.consumer import redis_consumer
 
 COORDINATOR_URL = os.getenv("COORDINATOR_URL", "http://localhost:8000")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+from .loader import model_loader
+
+COORDINATOR_URL = os.getenv("COORDINATOR_URL", "http://localhost:8000")
+MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-2-7b-chat-hf")
 
 class WorkerRegistration(BaseModel):
     worker_id: str
@@ -62,6 +66,7 @@ async def lifespan(app: FastAPI):
     except httpx.RequestError as e:
         print(f"Failed to register worker: {e}")
 
+    app.state.model = model_loader.load_model(MODEL_NAME)
     yield
 
     consumer_task.cancel()
