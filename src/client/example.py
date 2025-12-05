@@ -11,7 +11,7 @@ async def main():
 
     # Create an inference request
     request = InferenceRequest(
-        model="gpt2",
+        model="llama3.2",
         prompt="What is the capital of France?",
         params={},
     )
