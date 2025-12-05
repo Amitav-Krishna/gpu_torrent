@@ -39,7 +39,7 @@ async def create_inference_job(request: InferenceRequest):
         worker_data = redis_client.get(key)
         if worker_data:
             all_workers.append(Worker.model_validate_json(worker_data))
-
+    
     compatible_workers = [
         worker
         for worker in all_workers
