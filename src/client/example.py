@@ -12,7 +12,7 @@ async def main():
     # Create an inference request
     request = InferenceRequest(
         model="llama3.2",
-        prompt="What is the capital of France?.",
+        prompt="Give me a recipe for an eggless chocolate cake.",
         params={},
     )
 
