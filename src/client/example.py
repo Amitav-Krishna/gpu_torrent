@@ -1,4 +1,5 @@
 import asyncio
+
 from src.client.api import APIClient
 from src.client.models import InferenceRequest
 
@@ -8,20 +9,26 @@ async def main():
     """
     client = APIClient(base_url="http://localhost:8000")
 
+    # Create an inference request
     request = InferenceRequest(
         model="gpt2",
         prompt="What is the capital of France?",
-        params={}
+        params={},
     )
 
+    # Submit the job
     response = await client.submit_inference_job(request)
-    if response:
-        print(f"Submitted job with request ID: {response.request_id}")
-        result = await client.get_result(response.request_id)
-        if result:
-            print(f"Received result: {result.result}")
-        else:
-            print("Failed to retrieve result.")
+    if not response:
+        return
+
+    print(f"Submitted job with request ID: {response.request_id}")
+
+    # Retrieve the result
+    result = await client.get_result(response.request_id)
+    if not result:
+        return
+
+    print(f"Received result: {result.result}")
 
 if __name__ == "__main__":
     asyncio.run(main())

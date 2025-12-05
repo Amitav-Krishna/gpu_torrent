@@ -17,32 +17,24 @@ class APIClient:
             response.raise_for_status()
             return InferenceResponse.model_validate(response.json())
         except httpx.HTTPStatusError as e:
-            print(f"Error submitting inference job: {e.response.text}")
-            return None
-        except httpx.RequestError as e:
-            print(f"Request error submitting inference job: {e}")
+            print(f"Error submitting inference job: {e}")
             return None
 
-    async def get_result(self, request_id: str, poll_interval: int = 5, timeout: int = 120) -> Optional[InferenceResult]:
+    async def get_result(self, request_id: str, poll_interval: int = 5) -> Optional[InferenceResult]:
         """Retrieves the result of an inference job, polling until it's available."""
-        start_time = time.time()
-        while time.time() - start_time < timeout:
+        while True:
             try:
                 response = await self.client.get(f"{self.base_url}/result/{request_id}")
                 if response.status_code == 200:
                     return InferenceResult.model_validate(response.json())
                 elif response.status_code == 404:
+                    print("Result not yet available, polling again...")
                     await asyncio.sleep(poll_interval)
                 else:
                     response.raise_for_status()
-
             except httpx.HTTPStatusError as e:
-                # In a real library, you might want to log this instead of printing
-                return None
-            except httpx.RequestError as e:
-                # In a real library, you might want to log this instead of printing
+                print(f"Error retrieving result: {e}")
                 return None
             except asyncio.CancelledError:
+                print("Polling cancelled.")
                 break
-
-        return None
