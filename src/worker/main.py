@@ -13,12 +13,11 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 from .loader import model_loader
 
 COORDINATOR_URL = os.getenv("COORDINATOR_URL", "http://localhost:8000")
-MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-2-7b-chat-hf")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt2")
 
 class WorkerRegistration(BaseModel):
     worker_id: str
-    gpu_model: str
-    vram: float # in GB
+    gpu_info: dict  # Server expects a Dict with gpu details
     supported_models: List[str]
 
 import pynvml
@@ -36,17 +35,15 @@ def get_gpu_specs(worker_id: str) -> WorkerRegistration:
 
         return WorkerRegistration(
             worker_id=worker_id,
-            gpu_model=gpu_model,
-            vram=round(vram, 2),
-            supported_models=["meta-llama/Llama-2-7b-chat-hf", "mistralai/Mistral-7B-v0.1"]
+            gpu_info={"gpu_model": gpu_model, "vram": round(vram, 2)},
+            supported_models=["gpt2"]
         )
     except pynvml.NVMLError:
         print("pynvml is not installed or failed to initialize. Using placeholder data.")
         return WorkerRegistration(
             worker_id=worker_id,
-            gpu_model="N/A",
-            vram=0.0,
-            supported_models=[]
+            gpu_info={"gpu_model": "N/A", "vram": 0.0},
+            supported_models=["gpt2"]
         )
 
 @asynccontextmanager

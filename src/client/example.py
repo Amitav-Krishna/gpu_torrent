@@ -9,7 +9,7 @@ async def main():
     client = APIClient(base_url="http://localhost:8000")
 
     request = InferenceRequest(
-        model="meta-llama/Llama-2-7b-chat-hf",
+        model="gpt2",
         prompt="What is the capital of France?",
         params={}
     )
