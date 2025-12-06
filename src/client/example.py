@@ -11,8 +11,8 @@ async def main():
 
     # Create an inference request
     request = InferenceRequest(
-        model="meta-llama/Llama-2-7b-chat-hf",
-        prompt="What is the capital of France?",
+        model="llama3.2",
+        prompt="Give me a recipe for an eggless chocolate cake.",
         params={},
     )
 

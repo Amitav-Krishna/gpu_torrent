@@ -1,12 +1,26 @@
-import asyncio
+import ollama
+
 
 async def execute_inference(model: str, prompt: str, params: dict) -> dict:
     """
-    Executes a dummy inference and returns a static response.
-
-    In a real implementation, this function would interact with a loaded
-    ML model to generate a response based on the prompt.
+    Executes inference using an Ollama model and returns the response.
     """
-    print(f"Executing dummy inference for model {model} with prompt: {prompt} and params: {params}")
-    await asyncio.sleep(1)  # Simulate inference time
-    return {"text": "The inference is not working yet"}
+    print(f"Executing inference for model {model} with prompt: {prompt[:50]}...")
+
+    options = {}
+    if "temperature" in params:
+        options["temperature"] = params["temperature"]
+    if "num_predict" in params:
+        options["num_predict"] = params["num_predict"]
+    if "top_p" in params:
+        options["top_p"] = params["top_p"]
+    if "top_k" in params:
+        options["top_k"] = params["top_k"]
+
+    response = await ollama.AsyncClient().generate(
+        model=model,
+        prompt=prompt,
+        options=options if options else None,
+    )
+
+    return {"text": response["response"]}

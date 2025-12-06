@@ -12,4 +12,4 @@ class InferenceResponse(BaseModel):
 
 class InferenceResult(BaseModel):
     request_id: str
-    result: str
+    result: Dict

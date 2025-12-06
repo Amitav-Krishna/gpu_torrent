@@ -10,7 +10,7 @@ async def redis_consumer(worker_id: str, redis_url: str):
     """
     try:
         redis_client = await redis.from_url(redis_url)
-        queue_name = f"worker:{worker_id}"
+        queue_name = f"queue:{worker_id}"
         print(f"Worker {worker_id} subscribing to queue: {queue_name}")
 
         while True:
@@ -27,9 +27,10 @@ async def redis_consumer(worker_id: str, redis_url: str):
                     job_data["params"]
                 )
 
-                result_queue = f"results:{job_data['request_id']}"
-                await redis_client.lpush(result_queue, json.dumps(result))
-                print(f"Finished job: {job_data['request_id']}, result sent to {result_queue}")
+                result_key = f"result:{job_data['request_id']}"
+                result_data = {"request_id": job_data['request_id'], "result": result}
+                await redis_client.set(result_key, json.dumps(result_data))
+                print(f"Finished job: {job_data['request_id']}, result sent to {result_key}")
 
             except json.JSONDecodeError:
                 print("Error: Invalid JSON payload")

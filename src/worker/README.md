@@ -4,17 +4,56 @@ This document outlines the implementation of the GPU worker node, which is respo
 
 ## Architecture
 
+<<<<<<< HEAD
+## Prerequisites
+
+- **Redis server**: Must be running on the coordinator machine (not on the worker). The worker connects to Redis via `REDIS_URL`.
+- **NVIDIA driver**: Required for `pynvml` to detect GPU specs. Without it, the worker will register with placeholder GPU info.
+
+## Installation
+=======
 The worker is a FastAPI application that, on startup, gathers information about the host's GPU and sends it to the coordinator's `/register` endpoint. This information includes the GPU model, VRAM, and a list of supported models.
+>>>>>>> e7d80e7 (I don't know bro)
 
 The worker uses the `nvidia-ml-py` library to dynamically gather GPU specifications. It includes error handling to gracefully manage scenarios where the NVIDIA driver or `pynvml` library are not available, in which case it will register with placeholder data.
 
 The worker communicates with the coordinator over HTTP using the `httpx` library for asynchronous requests.
 
+<<<<<<< HEAD
+## Configuration
+
+The worker is configured using the following environment variables:
+
+| Variable          | Description                                         | Default                            |
+| ----------------- | --------------------------------------------------- | ---------------------------------- |
+| `COORDINATOR_URL` | The URL of the central coordinator.                 | `http://localhost:8000`            |
+| `REDIS_URL`       | The URL of the Redis server (on coordinator).       | `redis://localhost:6379`           |
+| `MODEL_NAME`      | The name of the Hugging Face model to use.          | `gpt2`                             |
+
+### Using Gated Models (e.g., Llama-2)
+
+Some models like `meta-llama/Llama-2-7b-chat-hf` are gated and require authentication:
+
+1. Create a HuggingFace account at https://huggingface.co
+2. Request access to the model (e.g., https://huggingface.co/meta-llama/Llama-2-7b-chat-hf)
+3. Create an access token at https://huggingface.co/settings/tokens
+4. Login via CLI:
+   ```bash
+   pip install huggingface_hub
+   huggingface-cli login
+   ```
+
+Alternatively, set the `HF_TOKEN` environment variable:
+```bash
+export HF_TOKEN="your_token_here"
+```
+=======
 ## Code Structure
 
 - `main.py`: The main entry point for the worker application. It contains the FastAPI application, the worker registration logic, and the GPU specification gathering logic.
 - `requirements.txt`: A list of the Python dependencies required by the worker.
 - `README.md`: This document.
+>>>>>>> e7d80e7 (I don't know bro)
 
 ## Usage
 
