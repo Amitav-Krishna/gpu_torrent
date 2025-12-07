@@ -1,0 +1,873 @@
+#+TITLE: GPU Torrent Protocol Specification
+#+AUTHOR: GPU Torrent Contributors
+#+DATE: 2025-12-06
+#+OPTIONS: toc:3 num:t
+
+* Overview
+
+GPU Torrent is a decentralized, peer-to-peer protocol for distributed LLM inference. Unlike traditional coordinator-based systems, GPU Torrent enables clients and workers to interact directly for scheduling, payment, and correctness verification without trusted intermediaries.
+
+** Design Philosophy
+
+The protocol operates on three foundational principles:
+
+1. *Trustless Verification* - Correctness is enforced through cryptographic commitments and random audits, not coordinator authority
+2. *Economic Alignment* - Honest computation is always cheaper than cheating
+3. *Decentralized Operation* - All protocol operations (discovery, scheduling, payment, verification, slashing) function without central coordination
+
+** The Core Problem
+
+LLM inference outputs are inherently non-deterministic and unverifiable by inspection alone. A malicious worker could return fabricated outputs indistinguishable from genuine inference. The protocol must ensure:
+
+- Workers cannot profitably fake inference results
+- Clients cannot withhold payment after receiving valid results
+- Disputes resolve automatically without central arbitration
+
+* Protocol Architecture
+
+** Participants
+
+*** Clients
+Entities requesting inference. Clients post jobs, lock escrow, issue verification challenges, and receive results.
+
+*** Workers
+Entities providing GPU compute. Workers stake collateral, accept jobs, produce inference with cryptographic commitments, and respond to audits.
+
+*** The Network
+The peer-to-peer overlay providing discovery, gossip, and reputation aggregation. No single node has authority.
+
+** Trust Model
+
+The protocol assumes:
+- Rational economic actors (will cheat if profitable, honest if cheaper)
+- Cryptographic primitives are secure
+- Network connectivity is eventually reliable
+- A minority of participants may be Byzantine
+
+* Economic Layer
+
+** Stake-Based Identity
+
+All workers must post on-chain stake before participating. Stake serves multiple purposes:
+
+- *Sybil Resistance* - Prevents infinite identity creation
+- *Slashing Collateral* - Provides funds to penalize cheating
+- *Reputation Anchor* - Links behavior history to economic value
+
+*** Stake Requirements
+
+The protocol uses a hybrid stake model combining flat minimum with proportional capacity:
+
+#+BEGIN_SRC
+total_minimum_stake = max(BASE_MINIMUM_STAKE, capacity_stake)
+capacity_stake = max_concurrent_jobs * TOKENS_PER_JOB_SLOT
+#+END_SRC
+
+| Parameter | Value | Description |
+|-----------+-------+-------------|
+| =BASE_MINIMUM_STAKE= | 1000 TOKENS | Sybil resistance floor |
+| =TOKENS_PER_JOB_SLOT= | 100 TOKENS | Cost per concurrent job capability |
+| =MAX_JOB_VALUE_RATIO= | 0.1 (10%) | Worker cannot accept jobs worth >10% of stake |
+
+*** Stake-to-Job Limits
+
+Workers cannot over-leverage their stake:
+
+#+BEGIN_SRC
+max_exposure = worker_stake * 0.8  # Keep 20% buffer
+job_exposure = job_value * SLASH_MULTIPLIER  # e.g., 2x
+can_accept = (current_exposure + job_exposure) <= max_exposure
+#+END_SRC
+
+*** Withdrawal Mechanics
+
+Two-phase withdrawal protects against slash-and-run:
+
+1. *Signal Intent* - Worker calls =unstake(amount)=; stake marked as "thawing"
+2. *Thawing Period* - 7 days; stake still subject to slashing for pending jobs
+3. *Withdrawal* - After thawing, =withdraw()= returns funds
+
+** Job Escrow
+
+Before a job begins:
+
+1. Client locks payment in escrow (on-chain or state channel)
+2. Escrow visibility is cryptographically verifiable
+3. Workers only accept jobs with confirmed escrow
+
+Escrow funds move only after verification completes.
+
+*** On-Chain Escrow States
+
+#+BEGIN_SRC
+enum EscrowState {
+    Created,      // Client deposited
+    Assigned,     // Worker accepted
+    Delivered,    // Worker submitted result + commitments
+    Challenged,   // Client issued challenge
+    Resolved,     // Verification complete
+    Released,     // Funds sent to worker
+    Refunded      // Funds returned to client
+}
+#+END_SRC
+
+*** Timeout Parameters
+
+| Transition | Timeout | Description |
+|------------+---------+-------------|
+| Created -> Refunded | 24 hours | No worker acceptance |
+| Assigned -> Refunded | 2 hours | Worker fails to deliver |
+| Delivered -> Released | 1 hour | Client fails to challenge (auto-release) |
+| Challenged -> Released | 30 minutes | Worker fails to respond (slash + refund) |
+
+** Payment Flow
+
+#+BEGIN_SRC
+Client                    Escrow                    Worker
+   |                         |                         |
+   |-- Lock funds ---------->|                         |
+   |                         |<---- Accept job --------|
+   |                         |                         |
+   |<-------- Result + Commitments -------------------|
+   |                         |                         |
+   |-- Challenge ----------->|                         |
+   |                         |<---- Response ----------|
+   |                         |                         |
+   [If valid]                |                         |
+   |-- Release ------------->|-------- Pay ----------->|
+   |                         |                         |
+   [If invalid]              |                         |
+   |<- Refund + slash -------|-------- Slash -------->|
+#+END_SRC
+
+* Verification Layer
+
+** The Commitment Problem
+
+Naive verification approaches fail for LLM inference:
+
+- *Output comparison* - Stochastic sampling produces different valid outputs
+- *Deterministic mode* - Constrains users; still fakeable by replaying cached outputs
+- *Trusted execution* - Requires specialized hardware; centralizes trust
+
+The protocol instead requires workers to commit to /internal inference state/.
+
+** Commitment Scheme: Prefix Hash (Primary)
+
+The primary commitment scheme uses per-token hash commitments over logit distributions.
+
+*** Data Structure
+
+#+BEGIN_SRC
+struct TokenCommitment {
+    position: u32,           // Token position in sequence
+    commitment: [u8; 32],    // BLAKE3 hash
+}
+
+struct TokenPreimage {
+    position: u32,
+    prompt_prefix_hash: [u8; 32],  // Hash of tokens [0..position]
+    top_k_logits: [(u32, f32); 64], // Top-64 token indices + values
+    model_id: [u8; 32],            // Hash of model weights
+    job_nonce: [u8; 32],           // Client-provided random nonce
+    seed: u64,                     // RNG seed for sampling
+}
+#+END_SRC
+
+*** Commitment Generation
+
+#+BEGIN_SRC python
+def generate_commitment(position, prompt_tokens, logits, model_id, job_nonce, seed):
+    # Compute prefix hash (incremental)
+    prefix_hash = blake3(b"prefix" + encode(prompt_tokens[:position+1]))
+
+    # Extract and quantize top-k logits
+    top_k = extract_top_k(logits, K=64)
+    quantized = [(idx, round(val, 3)) for idx, val in top_k]
+
+    # Construct preimage
+    preimage = cbor_encode({
+        "position": position,
+        "prefix_hash": prefix_hash,
+        "top_k_logits": quantized,
+        "model_id": model_id,
+        "job_nonce": job_nonce,
+        "seed": seed
+    })
+
+    # Generate commitment
+    commitment = blake3(b"commitment_v1" + preimage)
+    return commitment, preimage
+#+END_SRC
+
+*** Size Analysis
+
+| Metric | Per Token | 512 Tokens |
+|--------+-----------+------------|
+| Commitment (published) | 32 bytes | 16 KB |
+| Preimage (stored) | ~620 bytes | 310 KB |
+| Audit response | ~908 bytes | - |
+
+*** Computational Overhead
+
+| Operation | Time | Relative to Inference |
+|-----------+------+-----------------------|
+| Extract top-64 logits | ~10 us | <0.1% |
+| BLAKE3 hash | ~0.3 us | <0.01% |
+| Total per token | ~11 us | <0.5% |
+
+** Commitment Scheme: Merkle KV-Cache (High-Assurance)
+
+For high-value jobs, workers may additionally commit to KV-cache states.
+
+*** Tree Structure
+
+#+BEGIN_SRC
+                     Global Root
+                         |
+          +------+-------+-------+------+
+          |      |       |       |      |
+        Pos0   Pos1    Pos2    ...    PosT
+          |
+    +-----+-----+-----+-----+
+    |     |     |     |     |
+   L0    L1    L2    ...   L_n  (layers)
+    |
+  +---+---+
+  |   |   |
+ KV  Attn Hidden
+#+END_SRC
+
+*** Size Analysis
+
+For Llama-3.1 8B (L=32, H=32, D_head=128):
+
+| Metric | Value |
+|--------+-------|
+| KV-cache per token per layer | 16 KB |
+| Merkle tree nodes per token | ~67 KB |
+| Published roots only | 32 bytes |
+| Proof per element | ~992 bytes |
+
+** Random Audit Challenges
+
+After receiving the result and commitments:
+
+1. Client commits to challenge randomness before seeing output
+2. Client reveals randomness to select audit positions
+3. Worker reveals corresponding preimages with Merkle proofs
+4. Client verifies consistency and plausibility
+
+*** Challenge Generation
+
+#+BEGIN_SRC python
+def select_audit_positions(commitment_root, num_challenges, total_tokens):
+    # VRF ensures worker cannot predict challenges
+    seed = blake3(commitment_root + client_secret)
+    rng = random.Random(seed)
+    return rng.sample(range(total_tokens), num_challenges)
+#+END_SRC
+
+*** Challenge Types
+
+| Type | What is Revealed | Purpose |
+|------+------------------+---------|
+| =LOGIT_CHALLENGE= | Top-k logit distribution | Verify inference output |
+| =KV_CACHE_CHALLENGE= | KV vectors at layer/position | Verify computation trace |
+| =HIDDEN_STATE_CHALLENGE= | Activation vectors | Verify intermediate states |
+| =ATTENTION_CHALLENGE= | Attention pattern | Verify attention computation |
+
+*** Audit Coverage Requirements
+
+| Tokens Faked | Audit Rate Needed | Positions (n=512) |
+|--------------+-------------------+-------------------|
+| 1 | 99% | 507 |
+| 50 | 8.5% | 44 |
+| 256 (half) | 1.8% | 9 |
+| 512 (all) | 0.9% | 5 |
+
+Recommended: 10-20 random positions per job (99%+ detection of >50% fabrication).
+
+*** Verification Logic
+
+#+BEGIN_SRC python
+def verify_audit_response(challenge, response, commitment):
+    # 1. Verify Merkle proof
+    if not verify_merkle_proof(response.preimage, response.proof, commitment.root):
+        return FAIL_INVALID_PROOF
+
+    # 2. Recompute commitment from preimage
+    expected = blake3(b"commitment_v1" + response.preimage)
+    if expected != commitment.hash:
+        return FAIL_COMMITMENT_MISMATCH
+
+    # 3. Plausibility checks
+    logits = decode_logits(response.preimage)
+    if not is_valid_distribution(logits):
+        return FAIL_IMPLAUSIBLE
+    if not entropy_in_range(logits, model_params):
+        return FAIL_IMPLAUSIBLE
+
+    return PASS
+#+END_SRC
+
+** Verification Economics
+
+The audit probability and slash severity are tuned so that:
+
+#+BEGIN_QUOTE
+Expected cost of cheating > Expected cost of honest computation
+#+END_QUOTE
+
+*** Economic Formula
+
+#+BEGIN_SRC
+E[cost_cheat] = P(detect) * slash_amount + (1 - P(detect)) * saved_compute
+E[cost_honest] = compute_cost
+
+For cheating to be unprofitable:
+E[cost_cheat] > E[cost_honest]
+P(detect) * slash_amount > compute_cost - (1 - P(detect)) * saved_compute
+#+END_SRC
+
+With 10 random audits and 2x job value slash:
+- Detection probability for full fabrication: >99.9%
+- Expected loss from cheating: ~2x job value
+- Honest computation is always cheaper
+
+* Slashing and Disputes
+
+** Slash Triggers
+
+| Trigger | Severity | Verification Method |
+|---------+----------+---------------------|
+| =MISSING_RESPONSE= | MEDIUM | Blockchain timestamp |
+| =MISSING_CHALLENGE_RESPONSE= | HIGH | Blockchain timestamp |
+| =INVALID_COMMITMENT= | CRITICAL | On-chain Merkle proof |
+| =IMPLAUSIBLE_VALUES= | HIGH | Statistical bounds check |
+| =DUPLICATE_COMMITMENT= | CRITICAL | Commitment registry lookup |
+| =ABANDONMENT= | MEDIUM | Timeout + no heartbeat |
+
+** Slash Calculation
+
+#+BEGIN_SRC
+slash_amount = BASE_SLASH
+             + (job_value * JOB_MULTIPLIER)
+             + (worker_stake * STAKE_MULTIPLIER * severity_factor)
+             + repeat_offender_penalty
+#+END_SRC
+
+| Parameter | Value | Description |
+|-----------+-------+-------------|
+| =BASE_SLASH= | 0.01 ETH | Minimum slash |
+| =JOB_MULTIPLIER= | 2.0x | Scales with job value |
+| =STAKE_MULTIPLIER= | 0.05 | 5% of stake at risk |
+| =MAX_SLASH_RATIO= | 0.50 | Never slash >50% at once |
+
+*** Severity Factors
+
+| Offense | Factor |
+|---------+--------|
+| =MISSING_RESPONSE= | 1.0 |
+| =MISSING_CHALLENGE_RESPONSE= | 1.5 |
+| =ABANDONMENT= | 1.0 |
+| =INVALID_COMMITMENT= | 2.5 |
+| =IMPLAUSIBLE_VALUES= | 2.5 |
+| =DUPLICATE_COMMITMENT= | 3.0 |
+
+** Slash Distribution
+
+| Recipient | Share | Purpose |
+|-----------+-------+---------|
+| Client | 60% | Compensation + reporting incentive |
+| Treasury | 25% | Protocol development |
+| Burn | 15% | Deflationary pressure |
+
+** Griefing Prevention
+
+*** Challenger Bond
+
+Challengers must post a bond (10% of potential slash) when initiating:
+
+#+BEGIN_SRC
+required_bond = potential_slash / 10
+#+END_SRC
+
+If slash is refuted:
+- 80% of bond goes to worker (compensation)
+- 20% goes to treasury
+
+*** False Accusation Tracking
+
+#+BEGIN_SRC
+Challenger reputation:
+- Successful slash: +10 points
+- Failed slash: -50 points
+- Below -100: Higher bond requirements
+- 3+ failed slashes: Temporary ban
+#+END_SRC
+
+** Edge Cases
+
+*** Worker Goes Offline
+
+#+BEGIN_SRC
+T+0:      Job assigned
+T+5min:   Response timeout - standard slash
+T+1hour:  Extended timeout - abandonment declared
+T+24hour: Remaining stake distributed to affected clients
+#+END_SRC
+
+*** Client Goes Offline
+
+#+BEGIN_SRC
+T+0:      Worker delivers result
+T+48h:    Auto-release timeout
+T+48h:    Anyone can call autoReleaseEscrow()
+          Escrow transferred to worker
+#+END_SRC
+
+*** Network Partition
+
+- Challenge windows extended if >30% of workers fail simultaneously
+- Slashes queued but not executed until network recovers
+- Workers should pre-compute all possible audit responses
+
+* Network Layer
+
+** Peer Discovery
+
+The network uses a modified Kademlia DHT optimized for GPU inference routing.
+
+*** DHT Parameters
+
+| Parameter | Value |
+|-----------+-------|
+| Key space | 256-bit (SHA-256) |
+| Bucket size (k) | 20 peers |
+| Lookup concurrency (alpha) | 3 parallel |
+| Routing table | 256 k-buckets |
+
+*** Capability-Aware Routing
+
+Nodes publish to multiple DHT keys:
+
+#+BEGIN_SRC
+Node ID Key:  SHA256(public_key)           # Peer location
+Model Key:    SHA256("model:" || model)    # Model availability
+Stake Key:    SHA256("stake:" || tier)     # Stake-based discovery
+#+END_SRC
+
+*** TTL Values
+
+| Announcement | TTL |
+|--------------+-----|
+| Worker availability | 5 minutes |
+| Model capability | 30 minutes |
+| Reputation cache | 1 hour |
+| Node ID mapping | 24 hours |
+
+** Node Identity
+
+Node IDs are cryptographically bound to on-chain identity:
+
+#+BEGIN_SRC
+NodeIdentity {
+    public_key: Ed25519,       // 32 bytes
+    chain_address: Address,    // 20-32 bytes
+    stake_proof: Signature,    // 64 bytes
+    node_id: SHA256(public_key),
+    signature: Ed25519Sign(all_above)
+}
+#+END_SRC
+
+** Bootstrap Mechanism
+
+*** Multi-Tier Bootstrap
+
+1. *Cached Peers* - Locally persisted list of recent peers
+2. *DNS Discovery* - TXT records with signed node addresses
+3. *Hardcoded Nodes* - Protocol-maintained bootstrap nodes
+
+*** Bootstrap Sequence
+
+#+BEGIN_SRC
+1. Load cached peers (if available)
+2. Try cached peers in parallel (max 5)
+3. On failure: Query DNS bootstrap records
+4. On failure: Fall back to hardcoded nodes
+5. FIND_NODE(self.node_id) to populate routing table
+6. Announce capabilities to DHT
+7. Join gossip overlay
+#+END_SRC
+
+** NAT Traversal
+
+Strategies in order of preference:
+
+1. *Direct Connection* - Both peers have public IPs
+2. *UPnP/NAT-PMP* - Automatic port forwarding
+3. *STUN Hole Punching* - Coordinated via relay
+4. *TURN Relay* - Last resort for symmetric NAT
+
+** Gossip Protocol
+
+The network uses HyParView for membership + Plumtree for broadcast.
+
+*** HyParView Parameters
+
+| Parameter | Value |
+|-----------+-------|
+| Active view | 5 peers |
+| Passive view | 30 peers |
+| Shuffle interval | 60 seconds |
+
+*** Gossip Message Types
+
+| Type | Content | Consistency |
+|------+---------+-------------|
+| =WORKER_STATUS= | Availability, capacity | Eventual |
+| =JOB_POSTING= | Open job announcements | Causal |
+| =COMMITMENT= | Cryptographic commitments | Causal |
+| =VERIFICATION= | Audit results | Total (per job) |
+| =REPUTATION= | Score updates | Causal |
+| =SLASH_EVENT= | Slashing notifications | Causal |
+
+*** Bandwidth Optimization
+
+- Protocol buffers for serialization
+- Snappy compression for messages >512 bytes
+- Bloom filter deduplication (99%+ efficiency)
+- Rate limiting: 100 messages/second per peer
+
+** Job Negotiation
+
+*** Request-for-Quote Flow
+
+#+BEGIN_SRC
+Client                           Workers
+   |                                |
+   |──── RFQ_REQUEST ──────────────>| (to N candidates)
+   |     {job_spec, escrow_proof}   |
+   |                                |
+   |<──── RFQ_RESPONSE ─────────────| (within 5 seconds)
+   |     {quote, availability,      |
+   |      commitment_scheme,        |
+   |      estimated_latency}        |
+   |                                |
+   | [Client evaluates quotes]      |
+   |                                |
+   |──── JOB_OFFER ────────────────>| (to selected worker)
+   |     {job_id, accepted_quote}   |
+   |                                |
+   |<──── JOB_ACCEPT ──────────────-|
+   |     {signature, commitment}    |
+#+END_SRC
+
+*** Concurrency Handling
+
+- Workers track pending RFQ capacity tokens
+- First valid =JOB_OFFER= wins
+- Rejected clients retry with next candidate
+- Quote tokens are single-use
+
+** Reputation System
+
+*** Score Computation
+
+#+BEGIN_SRC
+base_score = stake_score + history_score + verification_score
+
+stake_score = min(1.0, stake / STAKE_CEILING) * 30      # Max 30 points
+history_score = min(1.0, jobs / 1000) * 35              # Max 35 points
+              - (failed / completed) * 20               # Penalty
+verification_score = (passed / total) * 35              # Max 35 points
+
+Penalties:
+- Recent slash: -50 points (decays over 30 days)
+- Unresolved disputes: -25 points
+- Low response rate: -10 points
+
+final_score = clamp(0, 100, base_score + penalties)
+#+END_SRC
+
+*** Manipulation Protection
+
+- *Sybil Resistance*: Stake requirement scales with desired reputation
+- *Whitewashing Prevention*: Slash history persists; 7-day minimum lockup
+- *Grinding Prevention*: Audit probability inversely scales with reputation
+
+* Protocol States
+
+** Job Lifecycle
+
+#+BEGIN_SRC
+                    +-------------+
+                    |   CREATED   |
+                    +------+------+
+                           | Client locks escrow
+                           v
+                    +-------------+
+                    |   POSTED    |
+                    +------+------+
+                           | Worker accepts
+                           v
+                    +-------------+
+                    |  ASSIGNED   |
+                    +------+------+
+                           | Worker computes
+                           v
+                    +-------------+
+                    |  COMMITTED  | <- Worker publishes commitments
+                    +------+------+
+                           | Worker returns result
+                           v
+                    +-------------+
+                    |  DELIVERED  |
+                    +------+------+
+                           | Client issues challenges
+                           v
+                    +-------------+
+                    | CHALLENGED  |
+                    +------+------+
+                           |
+              +------------+------------+
+              |                         |
+              v                         v
+       +-------------+          +-------------+
+       |  VERIFIED   |          |   SLASHED   |
+       +------+------+          +------+------+
+              |                         |
+              v                         v
+       +-------------+          +-------------+
+       |    PAID     |          |  REFUNDED   |
+       +-------------+          +-------------+
+#+END_SRC
+
+** Slash State Machine
+
+#+BEGIN_SRC
++------+     +-----------+     +----------+     +----------+
+| NONE |---->| INITIATED |---->| DISPUTED |---->| RESOLVED |
++------+     +-----+-----+     +----+-----+     +----+-----+
+                   |                |                |
+                   |                |                v
+                   |                |          +----------+
+                   |                +--------->| REFUTED  |
+                   |                           +----------+
+                   v
+              +----------+
+              | EXECUTED |
+              +----------+
+#+END_SRC
+
+* Security Considerations
+
+** Attack Vectors
+
+*** Lazy Worker Attack
+Worker returns plausible but fabricated output without running inference.
+
+/Mitigation/: Commitment scheme requires internal state knowledge only obtainable through real computation. Random audits of logit distributions and KV-cache states detect fabrication with >99% probability.
+
+*** Replay Attack
+Worker reuses commitments from previous identical jobs.
+
+/Mitigation/: Job-specific nonces in commitment hashes. =commitment = hash(data || job_nonce)=. Same prompt + different nonce = different commitments.
+
+*** Client Griefing
+Client issues impossible challenges or refuses to release payment.
+
+/Mitigation/:
+- Challenge validity is algorithmically verifiable
+- Challenger must post bond
+- Payment auto-releases after timeout if no valid challenge
+- False accusations slash challenger's bond
+
+*** Sybil Attack
+Attacker creates many identities to game reputation or collude.
+
+/Mitigation/:
+- Minimum stake requirement: 1000 TOKENS base
+- Creating N identities costs N * min_stake
+- Reputation accrues slowly (requires real work)
+- Cannot transfer reputation between identities
+
+*** Collusion Attack
+Multiple workers collude to share computation or fake redundancy.
+
+/Mitigation/:
+- Random worker assignment
+- Commitment uniqueness per worker (includes worker_id)
+- Cross-worker divergence detection in redundancy mode
+- Commitment reuse detected via registry
+
+*** Eclipse Attack
+Attacker controls all connections to a target node.
+
+/Mitigation/:
+- Stake-weighted routing table
+- Diverse bootstrap sources
+- Minimum 20% honest nodes required
+
+*** Model Substitution
+Worker runs cheaper model and claims it is the requested model.
+
+/Mitigation/:
+- Model ID is hash of weights file
+- KV-cache values are model-specific
+- Statistical tests detect distribution anomalies
+
+* Message Formats
+
+** Protocol Buffers Schema (Summary)
+
+#+BEGIN_SRC protobuf
+// Core identity
+message NodeIdentity {
+  bytes public_key = 1;
+  bytes chain_address = 2;
+  bytes stake_proof = 3;
+  bytes node_id = 4;
+  bytes signature = 5;
+}
+
+// Job negotiation
+message RFQRequest {
+  bytes job_id = 1;
+  string model = 2;
+  uint64 max_tokens = 3;
+  bytes escrow_proof = 4;
+  uint64 max_price = 5;
+  bytes signature = 9;
+}
+
+message RFQResponse {
+  bytes job_id = 1;
+  bytes worker_id = 2;
+  uint64 price_per_token = 3;
+  uint32 estimated_latency_ms = 4;
+  bytes capacity_token = 6;
+  bytes signature = 8;
+}
+
+// Commitments
+message TokenCommitment {
+  uint32 position = 1;
+  bytes commitment_hash = 2;
+}
+
+message AuditChallenge {
+  bytes job_id = 1;
+  repeated uint32 positions = 2;
+  bytes signature = 9;
+}
+
+message AuditResponse {
+  bytes job_id = 1;
+  repeated TokenReveal reveals = 2;
+  bytes merkle_proof = 3;
+  bytes signature = 9;
+}
+#+END_SRC
+
+** Message Signing
+
+- Algorithm: Ed25519
+- Coverage: All fields except signature
+- Serialization: Canonical protobuf (deterministic mode)
+
+** Protocol Versioning
+
+#+BEGIN_SRC
+Envelope {
+  protocol_version: "1.0.0",
+  message_type: uint8,
+  compression: "snappy" | "none",
+  payload: bytes
+}
+#+END_SRC
+
+- Semantic versioning
+- 6-month deprecation window for major versions
+- Peers negotiate highest mutual version
+
+* Implementation Parameters
+
+** Economic Parameters
+
+| Parameter | Value | Description |
+|-----------+-------+-------------|
+| =BASE_MINIMUM_STAKE= | 1000 TOKENS | Sybil resistance floor |
+| =TOKENS_PER_JOB_SLOT= | 100 TOKENS | Per concurrent job |
+| =MAX_JOB_VALUE_RATIO= | 0.1 | Max job as % of stake |
+| =SLASH_MULTIPLIER= | 2.0x | Slash relative to job |
+| =AUDIT_PROBABILITY= | 10% | Random audit rate |
+| =THAWING_PERIOD= | 7 days | Stake withdrawal delay |
+
+** Timing Parameters
+
+| Parameter | Value | Description |
+|-----------+-------+-------------|
+| =ESCROW_TIMEOUT_NO_ACCEPT= | 24 hours | Job expires |
+| =ESCROW_TIMEOUT_NO_DELIVER= | 2 hours | Worker SLA |
+| =CHALLENGE_WINDOW= | 1 hour | Client verification time |
+| =RESPONSE_WINDOW= | 30 minutes | Worker response time |
+| =DISPUTE_WINDOW= | 24 hours | Slash contestation |
+| =AUTO_RELEASE_TIMEOUT= | 48 hours | Client abandonment |
+
+** Network Parameters
+
+| Parameter | Value | Description |
+|-----------+-------+-------------|
+| =DHT_K= | 20 | Bucket size |
+| =DHT_ALPHA= | 3 | Lookup concurrency |
+| =GOSSIP_ACTIVE_VIEW= | 5 | Direct peers |
+| =GOSSIP_PASSIVE_VIEW= | 30 | Backup peers |
+| =WORKER_ANNOUNCE_TTL= | 5 minutes | Availability freshness |
+
+** Commitment Parameters
+
+| Parameter | Value | Description |
+|-----------+-------+-------------|
+| Hash function | BLAKE3-256 | Speed + security |
+| Top-K logits | K=64 | Statistical sufficiency |
+| Logit precision | 3 decimals | Floating point normalization |
+| Standard audit | 10 positions | 99.5% detection of >50% fake |
+| Deep audit | 50 positions | 99.9% detection of >5% fake |
+
+* Appendices
+
+** Glossary
+
+- *Commitment*: Cryptographic hash binding a party to hidden data
+- *Escrow*: Funds locked until conditions are met
+- *Slashing*: Penalty extracted from staked collateral
+- *Sybil Attack*: Creating multiple fake identities
+- *KV-Cache*: Key-value cache storing attention states in transformer models
+- *Audit*: Random verification challenge issued by client
+- *DHT*: Distributed hash table for decentralized lookup
+- *Plumtree*: Epidemic broadcast tree protocol
+- *HyParView*: Hybrid partial view membership protocol
+- *BLAKE3*: Cryptographic hash function (fast, parallelizable)
+
+** Recommended Deployment
+
+*** Blockchain Layer
+- Primary: Arbitrum or Base (low fees, EVM compatible)
+- Escrow and staking contracts on L2
+- Evidence stored on IPFS with hashes on-chain
+
+*** Inference Backend
+- Replace Ollama with vLLM for commitment generation
+- vLLM exposes logprobs and internal states
+- Integration via =SamplingParams.logprobs=64=
+
+** References
+
+1. Kademlia DHT: Maymounkov & Mazieres, "Kademlia: A Peer-to-peer Information System Based on the XOR Metric" (2002)
+2. HyParView: Leitao et al., "HyParView: A Membership Protocol for Reliable Gossip-Based Broadcast" (2007)
+3. Plumtree: Leitao et al., "Epidemic Broadcast Trees" (2007)
+4. BLAKE3: O'Connor et al., "BLAKE3: One function, fast everywhere" (2020)
+5. Ethereum Staking: ethereum.org/en/staking/
+6. The Graph Protocol: thegraph.com/docs/
