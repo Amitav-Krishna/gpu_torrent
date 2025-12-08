@@ -322,7 +322,7 @@ Expected cost of cheating > Expected cost of honest computation
 *** Economic Formula
 
 #+BEGIN_SRC
-E[cost_cheat] = P(detect) * slash_amount + (1 - P(detect)) * saved_compute
+E[cost_cheat] = P(detect) * slash_amount + (1 - P(detect)) * saved_compute)
 E[cost_honest] = compute_cost
 
 For cheating to be unprofitable:
