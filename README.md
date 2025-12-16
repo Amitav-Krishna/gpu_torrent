@@ -1,36 +1,7 @@
 # GPU Torrent
-**Note: This codebase will be pretty much entirely AI-generated.**
+**Note: This project is no longer under AI-exclusive development**.
 
-# Prototype tech stack
-Inference Engine: vLLM
-
-Python-native, minimal setup
-Excellent docs, supports most models out of box
-Easy to swap models during prototyping
-
-Message Broker: Redis (with Redis Streams or Pub/Sub)
-
-Simpler than RabbitMQ, faster to set up
-Good enough message queuing for prototypes
-Doubles as cache if needed
-
-Language/Framework: Python everywhere
-
-Don't split languages yet - unified Python = faster iteration
-Use FastAPI for all REST APIs (auto-docs, async support)
-Optimize later if needed
-
-Database: PostgreSQL
-
-Or even SQLite if you want to move faster initially
-PostgreSQL if you want production-ready from start
-
-Networking Layer: FastAPI + httpx for inter-service calls
-
-FastAPI handles REST endpoints
-Simple HTTP between services for prototype
-WebSockets via FastAPI if you need real-time updates
-
+For more info, see `/documentation/`
 # Prototype Stack
 
 # Implementation Plan

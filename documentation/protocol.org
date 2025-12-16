@@ -60,13 +60,13 @@ The protocol uses a hybrid stake model combining flat minimum with proportional 
 
 #+BEGIN_SRC
 total_minimum_stake = max(BASE_MINIMUM_STAKE, capacity_stake)
-capacity_stake = max_concurrent_jobs * TOKENS_PER_JOB_SLOT
+capacity_stake = max_concurrent_jobs * ETH_PER_JOB_SLOT
 #+END_SRC
 
 | Parameter | Value | Description |
 |-----------+-------+-------------|
-| =BASE_MINIMUM_STAKE= | 1000 TOKENS | Sybil resistance floor |
-| =TOKENS_PER_JOB_SLOT= | 100 TOKENS | Cost per concurrent job capability |
+| =BASE_MINIMUM_STAKE= | 0.1 ETH | Sybil resistance floor |
+| =ETH_PER_JOB_SLOT= | 0.01 ETH | Cost per concurrent job capability |
 | =MAX_JOB_VALUE_RATIO= | 0.1 (10%) | Worker cannot accept jobs worth >10% of stake |
 
 *** Stake-to-Job Limits
@@ -688,7 +688,7 @@ Client issues impossible challenges or refuses to release payment.
 Attacker creates many identities to game reputation or collude.
 
 /Mitigation/:
-- Minimum stake requirement: 1000 TOKENS base
+- Minimum stake requirement: 0.1 ETH base
 - Creating N identities costs N * min_stake
 - Reputation accrues slowly (requires real work)
 - Cannot transfer reputation between identities
@@ -798,8 +798,8 @@ Envelope {
 
 | Parameter | Value | Description |
 |-----------+-------+-------------|
-| =BASE_MINIMUM_STAKE= | 1000 TOKENS | Sybil resistance floor |
-| =TOKENS_PER_JOB_SLOT= | 100 TOKENS | Per concurrent job |
+| =BASE_MINIMUM_STAKE= | 0.1 ETH | Sybil resistance floor |
+| =ETH_PER_JOB_SLOT= | 0.01 ETH | Per concurrent job |
 | =MAX_JOB_VALUE_RATIO= | 0.1 | Max job as % of stake |
 | =SLASH_MULTIPLIER= | 2.0x | Slash relative to job |
 | =AUDIT_PROBABILITY= | 10% | Random audit rate |
@@ -840,22 +840,76 @@ Envelope {
 
 ** Glossary
 
-- *Commitment*: Cryptographic hash binding a party to hidden data
-- *Escrow*: Funds locked until conditions are met
-- *Slashing*: Penalty extracted from staked collateral
-- *Sybil Attack*: Creating multiple fake identities
-- *KV-Cache*: Key-value cache storing attention states in transformer models
-- *Audit*: Random verification challenge issued by client
-- *DHT*: Distributed hash table for decentralized lookup
-- *Plumtree*: Epidemic broadcast tree protocol
-- *HyParView*: Hybrid partial view membership protocol
-- *BLAKE3*: Cryptographic hash function (fast, parallelizable)
+*** Blockchain & Economic Terms
+
+- *Stake*: A security deposit (in ETH) that workers must lock up before participating. Acts as a "good behavior bond" - if the worker cheats, they lose part of this deposit. If they behave honestly, they can eventually withdraw it.
+
+- *Slashing*: The act of confiscating part of a worker's stake as punishment for misbehavior (faking results, going offline mid-job, etc.). Slashed funds are distributed to the affected client, protocol treasury, and partially burned.
+
+- *Escrow*: A holding account where client payment is locked before a job starts. Neither party can touch the funds until the job completes (payment to worker) or fails (refund to client). Prevents workers from being stiffed and clients from paying for fake work.
+
+- *Arbitrum*: An Ethereum Layer 2 network where this protocol's smart contracts run. Transactions cost pennies instead of dollars while maintaining Ethereum's security guarantees.
+
+- *ETH*: Ether, the native currency of Ethereum and its L2 networks. All stakes, escrows, and payments in this protocol are denominated in ETH.
+
+- *EVM (Ethereum Virtual Machine)*: The runtime environment for smart contracts on Ethereum and compatible chains. "EVM compatible" means the chain can run Ethereum smart contracts without modification.
+
+- *Smart Contract*: Self-executing code deployed on a blockchain. The escrow and staking logic runs as smart contracts - no human intermediary needed.
+
+- *Thawing Period*: A mandatory waiting period (7 days) between when a worker requests to withdraw their stake and when they can actually withdraw. Prevents "cheat and run" attacks.
+
+- *Sybil Attack*: Creating many fake identities to game the system. Prevented by requiring each identity to post stake (creating 100 fake workers costs 100x the minimum stake).
+
+- *Griefing*: Maliciously causing harm to others even at cost to yourself. Example: a client issuing false challenges to waste worker time. Prevented by requiring challengers to post bonds.
+
+*** Protocol-Specific Terms
+
+- *Commitment*: A cryptographic hash that locks in a value without revealing it. Workers publish commitments to their inference computations; later, they must reveal the underlying data, which is checked against the commitment. You cannot fake a commitment after the fact.
+
+- *Audit/Challenge*: A spot-check where the client randomly selects token positions and demands the worker prove they actually computed those positions. Workers who faked results cannot produce valid proofs.
+
+- *Preimage*: The original data that was hashed to create a commitment. When challenged, workers reveal preimages; the client verifies that hashing the preimage produces the published commitment.
+
+- *KV-Cache*: Key-value cache storing intermediate attention states during transformer inference. Model-specific and position-specific, making it useful for proving real computation occurred.
+
+- *Top-K Logits*: The K highest-probability next tokens the model considered at each position. Part of what workers commit to, since these are only obtainable by actually running inference.
+
+*** Networking Terms
+
+- *DHT (Distributed Hash Table)*: A decentralized lookup system where no single node stores everything. Nodes cooperatively store and retrieve data based on cryptographic keys. Used for peer discovery.
+
+- *Kademlia*: A specific DHT algorithm using XOR distance metrics. The basis for this protocol's peer discovery.
+
+- *Gossip Protocol*: A method where nodes share information by randomly telling neighbors, who tell their neighbors, etc. Efficient for spreading updates across a large network.
+
+- *HyParView*: A membership protocol for maintaining a reliable set of peer connections. Combines a small "active view" of direct connections with a larger "passive view" of backup peers.
+
+- *Plumtree*: An efficient broadcast protocol that builds spanning trees for message propagation while using gossip for reliability.
+
+- *NAT Traversal*: Techniques for establishing direct connections between nodes behind routers/firewalls (which hide their true IP addresses). Includes hole punching and relay fallbacks.
+
+- *STUN/TURN*: Protocols for NAT traversal. STUN helps discover your public address and punch holes; TURN relays traffic when direct connection is impossible.
+
+*** Cryptographic Terms
+
+- *BLAKE3*: A fast cryptographic hash function used throughout the protocol. Produces 256-bit hashes.
+
+- *Ed25519*: A digital signature algorithm. Used to sign messages so recipients can verify the sender's identity.
+
+- *Merkle Tree*: A tree of hashes where each parent is the hash of its children. Allows efficient proofs that specific data exists within a larger dataset without revealing the whole dataset.
+
+- *Merkle Proof*: A path through a Merkle tree proving that a specific piece of data is included. Compact (logarithmic in tree size) and verifiable.
+
+- *VRF (Verifiable Random Function)*: A way to generate random numbers that can be proven to be correctly generated. Used to select audit positions unpredictably but verifiably.
+
+- *Nonce*: A one-time random value included in cryptographic operations to ensure uniqueness. Prevents replay attacks where old valid data is resubmitted.
 
 ** Recommended Deployment
 
 *** Blockchain Layer
-- Primary: Arbitrum or Base (low fees, EVM compatible)
-- Escrow and staking contracts on L2
+- Primary: Arbitrum One (low fees, EVM compatible, mature ecosystem)
+- Escrow and staking contracts deployed on Arbitrum
+- All stake and escrow values denominated in ETH
 - Evidence stored on IPFS with hashes on-chain
 
 *** Inference Backend
